@@ -90,12 +90,79 @@ questoes (
 ```
 As comparações de datas usam strings ISO (`YYYY-MM-DD`), o que mantém ordenação correta em operações `<=`.
 
+### Usar Supabase via API key (SDK)
+O app também pode usar diretamente a API do Supabase (PostgREST) quando os secrets `supabase.url` e `supabase.service_key` (ou `anon_key`, se você tiver políticas RLS) estiverem definidos. Nesse modo, nenhuma conexão Postgres direta é usada.
+
+Exemplo de secrets (Streamlit → Settings → Secrets):
+```toml
+[supabase]
+url = "https://<project-ref>.supabase.co"
+# Prefira a service_key para rodar no servidor com permissões completas
+service_key = "<service_role_key>"
+# ou, alternativamente, se você tiver RLS configurado para o anon_key:
+# anon_key = "<anon_key>"
+```
+
+Observações:
+- A criação de tabelas/índices não é possível via PostgREST; crie-as pelo SQL Editor do Supabase usando o DDL abaixo (mesmo esquema do Postgres).
+- Com `anon_key`, você precisará de políticas RLS permitindo SELECT/INSERT/UPDATE/DELETE na tabela `questoes`.
+
+### Exemplo de secrets
+Você pode copiar o arquivo de exemplo e preencher sua URL do Supabase:
+
+```
+cp .streamlit/secrets.example.toml .streamlit/secrets.toml
+```
+
+Edite o valor `url` em `[database]` com a sua connection string Postgres.
+
+### Migrar SQLite → Supabase
+Se você já possui dados no `questoes.db` (local) e quer enviá-los para o Postgres do Supabase, use o script de migração:
+
+```bash
+# Opção A: informar a URL pelo argumento
+python migrate_to_supabase.py \
+  --sqlite questoes.db \
+  --pg-url "postgresql://usuario:senha@db.<project-ref>.supabase.co:5432/postgres" \
+  --truncate
+
+# Opção B: usar variável de ambiente
+export DATABASE_URL="postgresql://usuario:senha@db.<project-ref>.supabase.co:5432/postgres"
+python migrate_to_supabase.py --sqlite questoes.db --truncate
+```
+
+Notas:
+- `--truncate` limpa a tabela de destino antes de migrar e reinicia a sequência do `id`.
+- Sem `--truncate`, o script faz upsert por `id` (insere/atualiza registros existentes).
+- O script cria a tabela/índices no Postgres se ainda não existirem.
+
+Alternativa com API key (sem connection string Postgres):
+```bash
+# Via argumentos
+python migrate_to_supabase_api.py \
+  --sqlite questoes.db \
+  --supabase-url "https://<project-ref>.supabase.co" \
+  --supabase-key "<service_role_key>" \
+  --truncate
+
+# Ou via variáveis de ambiente
+export SUPABASE_URL="https://<project-ref>.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="<service_role_key>"
+python migrate_to_supabase_api.py --sqlite questoes.db --truncate
+```
+
+Notas (API):
+- `--truncate` apaga os registros via DELETE em lotes.
+- Este método não cria a tabela; se a `questoes` não existir, o script mostrará o DDL para você criar no SQL Editor.
+- Use a `service_role_key` para evitar bloqueios de RLS durante a migração.
+
 ### Estrutura
 ```
 app.py              # UI e fluxo das abas
 db.py               # Acesso a dados (SQLite por padrão)
 models.py           # Modelo Pydantic para importação/validação
 migrate_db.py       # Script de migração/normalização
+migrate_to_supabase.py # Script para migrar dados do SQLite para Supabase/Postgres
 requirements*.txt   # Dependências
 runtime.txt         # Versão do Python para o deploy
 ```

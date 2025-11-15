@@ -17,3 +17,11 @@ questoes.db
 # OS / editor
 .DS_Store
 .vscode/
+
+# Ignore environment files
+.env
+.venv/
+env/
+venv/
+
+./streamlit/secrets.toml

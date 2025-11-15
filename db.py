@@ -11,6 +11,23 @@ except Exception:  # streamlit not strictly required for local scripts
 
 DB_NAME = "questoes.db"
 
+# Canonical column order used across backends
+COLUMNS = [
+    "id",
+    "numero",
+    "tipo",
+    "disciplina",
+    "aula",
+    "origem_pdf",
+    "enunciado",
+    "alternativas",
+    "resposta_correta",
+    "comentario",
+    "status",
+    "data_resposta",
+    "proxima_revisao",
+]
+
 
 def _get_pg_url() -> str | None:
     """Retrieve Postgres connection URL from Streamlit secrets or env.
@@ -34,6 +51,25 @@ def _get_pg_url() -> str | None:
     return os.environ.get("DATABASE_URL")
 
 
+def _get_supabase_cfg() -> tuple[str | None, str | None]:
+    """Return (url, key) from Streamlit secrets for Supabase API if available.
+
+    Looks for:
+    - st.secrets["supabase"]["url"], and either service_key (preferred) or anon_key
+    Returns (url, key) or (None, None) if not configured.
+    """
+    try:
+        if st is not None and hasattr(st, "secrets") and "supabase" in st.secrets:
+            sb = st.secrets["supabase"]
+            url = sb.get("url")
+            key = sb.get("service_key") or sb.get("anon_key")
+            if url and key:
+                return str(url), str(key)
+    except Exception:
+        pass
+    return None, None
+
+
 def _ensure_sslmode(url: str) -> str:
     # Supabase requires TLS; add sslmode=require if not present
     if "sslmode=" in url:
@@ -46,16 +82,25 @@ def _using_postgres() -> bool:
     return bool(_get_pg_url())
 
 
+def _using_supabase_api() -> bool:
+    url, key = _get_supabase_cfg()
+    return bool(url and key)
+
+
 def get_backend_label() -> str:
-    return "Postgres (Supabase)" if _using_postgres() else "SQLite (local)"
+    if _using_supabase_api():
+        return "Supabase API"
+    if _using_postgres():
+        return "Postgres (Supabase)"
+    return "SQLite (local)"
 
 def connect():
-    """Open a DB connection (Postgres via Supabase if configured, else SQLite).
+    """Open a DB connection for SQL backends (Postgres/SQLite).
 
-    - Postgres: uses psycopg2 and SSL required (for Supabase).
-    - SQLite: WAL mode and NORMAL synchronous for Streamlit concurrency.
+    Supabase API mode does not use a SQL connection; functions will call the
+    HTTP API via the Supabase Python SDK instead.
     """
-    if _using_postgres():
+    if _using_postgres() and not _using_supabase_api():
         pg_url = _ensure_sslmode(_get_pg_url())
         try:
             import psycopg2  # type: ignore
@@ -70,6 +115,24 @@ def connect():
     c.execute("PRAGMA synchronous=NORMAL;")
     conn.commit()
     return conn
+
+
+_sb_client = None
+
+
+def _get_supabase_client():
+    global _sb_client
+    if _sb_client is not None:
+        return _sb_client
+    url, key = _get_supabase_cfg()
+    if not (url and key):
+        return None
+    try:
+        from supabase import create_client  # type: ignore
+    except Exception as ex:
+        raise RuntimeError("'supabase' package is required. Add 'supabase' to requirements.txt") from ex
+    _sb_client = create_client(url, key)
+    return _sb_client
 
 
 def _adapt_query(query: str) -> str:
@@ -87,6 +150,20 @@ def _exec(conn, query: str, params: list | tuple = ()):  # minimal cursor exec h
     return cur
 
 def create_table():
+    if _using_supabase_api():
+        # In API mode we cannot create tables via PostgREST.
+        # Try a lightweight probe; if the table is missing, inform the user with SQL.
+        sb = _get_supabase_client()
+        try:
+            sb.table("questoes").select("id").limit(1).execute()
+        except Exception as ex:
+            if st is not None:
+                st.warning(
+                    "Tabela 'questoes' não encontrada no Supabase. Crie-a no SQL Editor com o DDL mostrado no README (ou me peça que eu cole aqui)."
+                )
+            # Do not raise to allow UI to load; operations will fail gracefully if attempted.
+        return
+    # SQL backends
     conn = connect()
     try:
         if _using_postgres():
@@ -145,8 +222,23 @@ def create_table():
         conn.close()
 
 def insert_question(data: dict):
-    conn = connect()
     alternativas_json = json.dumps(data.get("alternativas", []), ensure_ascii=False)
+    if _using_supabase_api():
+        sb = _get_supabase_client()
+        payload = {
+            "numero": data.get("numero"),
+            "tipo": data.get("tipo"),
+            "disciplina": data.get("disciplina"),
+            "aula": data.get("aula"),
+            "origem_pdf": data.get("origem_pdf"),
+            "enunciado": data.get("enunciado"),
+            "alternativas": alternativas_json,
+            "resposta_correta": data.get("resposta_correta"),
+            "comentario": data.get("comentario"),
+        }
+        sb.table("questoes").insert(payload).execute()
+        return
+    conn = connect()
     try:
         _exec(
             conn,
@@ -190,6 +282,21 @@ def _build_filters(filters: dict | None, status: str | None):
     return query, params
 
 def get_all_questions(filters: dict | None = None, status: str | None = None):
+    if _using_supabase_api():
+        sb = _get_supabase_client()
+        q = sb.table("questoes").select("*")
+        if filters:
+            if filters.get("disciplina"):
+                q = q.eq("disciplina", filters["disciplina"])
+            if filters.get("aula"):
+                q = q.eq("aula", filters["aula"])
+        if status:
+            q = q.eq("status", status)
+        q = q.order("id")
+        res = q.execute()
+        data = res.data or []
+        rows = [tuple(item.get(col) for col in COLUMNS) for item in data]
+        return rows
     conn = connect()
     query, params = _build_filters(filters, status)
     try:
@@ -209,8 +316,21 @@ def schedule_next_date(is_correct: bool, marked_doubt: bool = False):
     return (today + (timedelta(days=7) if is_correct else timedelta(days=1))).isoformat()
 
 def get_due_for_review(filters: dict | None = None):
-    conn = connect()
     today = today_date_str()
+    if _using_supabase_api():
+        sb = _get_supabase_client()
+        q = sb.table("questoes").select("*").lte("proxima_revisao", today)
+        if filters:
+            if filters.get("disciplina"):
+                q = q.eq("disciplina", filters["disciplina"])
+            if filters.get("aula"):
+                q = q.eq("aula", filters["aula"])
+        q = q.order("proxima_revisao")
+        res = q.execute()
+        data = res.data or []
+        rows = [tuple(item.get(col) for col in COLUMNS) for item in data]
+        return rows
+    conn = connect()
     query = (
         "SELECT * FROM questoes WHERE proxima_revisao IS NOT NULL AND proxima_revisao <= ?"
     )
@@ -231,8 +351,16 @@ def get_due_for_review(filters: dict | None = None):
     return rows
 
 def update_question_status(qid: int, status: str, proxima_revisao_date: str | None = None):
-    conn = connect()
     data_resp = today_date_str()
+    if _using_supabase_api():
+        sb = _get_supabase_client()
+        sb.table("questoes").update({
+            "status": status,
+            "data_resposta": data_resp,
+            "proxima_revisao": proxima_revisao_date,
+        }).eq("id", qid).execute()
+        return
+    conn = connect()
     try:
         _exec(
             conn,
@@ -252,6 +380,15 @@ _DISTINCT_WHITELIST = {"disciplina", "aula", "status", "origem_pdf", "tipo", "nu
 def get_distinct(field: str):
     if field not in _DISTINCT_WHITELIST:
         raise ValueError("Campo não permitido para DISTINCT")
+    if _using_supabase_api():
+        sb = _get_supabase_client()
+        res = sb.table("questoes").select(field).execute()
+        vals = []
+        for item in res.data or []:
+            v = item.get(field)
+            if v is not None and str(v).strip() != "":
+                vals.append(v)
+        return sorted(sorted(set(vals)))
     conn = connect()
     try:
         q = f"SELECT DISTINCT {field} FROM questoes WHERE {field} IS NOT NULL AND {field} != ''"
