@@ -1,0 +1,19 @@
+# Byte-compiled / cache
+__pycache__/
+*.pyc
+
+# Local DB and artifacts
+questoes.db
+*.sqlite
+
+# Streamlit
+.streamlit/
+
+# Notebooks / exports
+*.ipynb
+*.xlsx
+*.csv
+
+# OS / editor
+.DS_Store
+.vscode/
