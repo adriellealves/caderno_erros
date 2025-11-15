@@ -1,7 +1,4 @@
-<<<<<<< HEAD
-# caderno_erros
-=======
-## Caderno de Questões Inteligente
+# Caderno de Questões Inteligente
 
 Aplicação Streamlit para importar questões, responder em modo quiz, revisar erros com espaçamento e visualizar métricas.
 
@@ -61,7 +58,7 @@ Observações importantes:
 - Persistência externa (Supabase/Postgres): já suportado. Veja abaixo.
 
 ### Usar Supabase (Postgres) — persistência real
-O app detecta automaticamente um Postgres externo quando a variável/secret `DATABASE_URL` (ou `st.secrets["database"]["url"]`) está definida. Caso contrário, usa SQLite local.
+O app detecta automaticamente um Postgres externo quando a variável/secret `DATABASE_URL` (ou `st.secrets["database"]["url"]) está definida. Caso contrário, usa SQLite local.
 
 1) Crie um projeto no Supabase e obtenha a "Connection string" (URI Postgres).
 2) No Streamlit Cloud, abra "Settings → Secrets" e adicione:
@@ -105,4 +102,3 @@ runtime.txt         # Versão do Python para o deploy
 
 ### Licença
 Uso interno/projeto pessoal. Adapte conforme necessário.
->>>>>>> f19deb9 (feat: Implement database management and migration for question tracking)
