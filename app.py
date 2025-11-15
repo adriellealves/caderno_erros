@@ -1,4 +1,4 @@
-# app.py - Caderno de Questões Inteligente (corrigido: navegação + responder desativado corretamente)
+# app.py - Caderno de Questões Inteligente
 import streamlit as st
 import json
 from models import Questao
@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import ast
 import pandas as pd
 import plotly.express as px
+import math
 from db import (
     create_table,
     insert_question,
@@ -70,7 +71,7 @@ if "quiz_last_qid" not in st.session_state:
 if "err_idx" not in st.session_state:
     st.session_state.err_idx = 0
 
-# Top navigation — horizontal segmented control
+# Navegação principal — agora com st.tabs
 nav_items = [
     ("📥", "Importar JSON"),
     ("🧠", "Quiz"),
@@ -79,37 +80,36 @@ nav_items = [
     ("🗃️", "Banco"),
     ("📈", "Desempenho"),
 ]
-tab_names = [label for _, label in nav_items]
 tab_labels = [f"{icon} {label}" for icon, label in nav_items]
 
-# pequeno estilo para agrupar como "pills"
+# Estilos rápidos: botão primário mais visível e largura de conteúdo
 st.markdown(
     """
     <style>
-    /* Container do grupo */
-    div[role="radiogroup"]{
-        gap:.4rem; padding:.25rem; background:#f3f4f6; border-radius:10px; flex-wrap:wrap;
-    }
+    .stButton>button {background:#2563eb;color:white;border:0;border-radius:8px;padding:0.55rem 0.9rem}
+    .stButton>button:hover {background:#1d4ed8}
+    .stDownloadButton>button {border-radius:8px}
+    .main .block-container{max-width:1200px}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-selected_label = st.radio(
-    "Menu",
-    tab_labels,
-    index=tab_names.index(st.session_state.current_tab) if st.session_state.current_tab in tab_names else 1,
-    horizontal=True,
-    label_visibility="collapsed",
-    key="top_menu",
-)
-st.session_state.current_tab = tab_names[tab_labels.index(selected_label)]
+# st.tabs retorna uma lista de objetos, cada um para uma aba
+tab_objs = st.tabs(tab_labels)
+
+# Mapeia o índice da aba ativa para o nome
+tab_names = [label for _, label in nav_items]
+tab_idx = 1  # default Quiz
+if "current_tab" in st.session_state and st.session_state.current_tab in tab_names:
+    tab_idx = tab_names.index(st.session_state.current_tab)
+st.session_state.current_tab = tab_names[tab_idx]
 tab = st.session_state.current_tab
 
 # -----------------------
 # ABA: Importar (colar JSON)
 # -----------------------
-if tab == "Importar JSON":
+with tab_objs[0]:
     st.header("📥 Cole o JSON de questões")
     st.write("Cole uma lista JSON de objetos. Exemplo: [ {\"numero\":\"1\",\"tipo\":\"multipla\", ...}, ... ]")
     json_input = st.text_area("Cole aqui o JSON", height=360)
@@ -150,7 +150,7 @@ if tab == "Importar JSON":
 # -----------------------
 # ABA: Quiz
 # -----------------------
-elif tab == "Quiz":
+with tab_objs[1]:
     st.header("🧠 Quiz — por disciplina / aula")
     # filters
     disciplinas = get_distinct("disciplina")
@@ -212,7 +212,7 @@ elif tab == "Quiz":
         marked_doubt = st.checkbox("Marcar como dúvida", key=doubt_key, disabled=already_answered)
 
         # responder button (disabled if already answered)
-        resp_btn = st.button("Responder", disabled=already_answered)
+        resp_btn = st.button("Responder", disabled=already_answered, key=f"quiz_responder_btn_{qid}")
 
         # process only if not already answered and button pressed
         if resp_btn and not already_answered:
@@ -251,17 +251,12 @@ elif tab == "Quiz":
                 if comentario:
                     with st.expander("💬 Comentário do professor"):
                         st.write(comentario)
-                # manter na aba e permitir ver feedback antes de avançar
-                st.session_state.current_tab = "Quiz"
-                # NÃO chamamos st.rerun aqui para que o usuário veja o resultado;
-                # o usuário pode clicar em "Próxima" para seguir.
 
-        # Navigation
-        col1, col2, col3 = st.columns([1,1,6])
+        # Navegação entre questões
+        col1, col2 = st.columns([1,1])
         with col1:
             if st.button("⬅️ Anterior") and st.session_state.quiz_idx > 0:
                 st.session_state.quiz_idx -= 1
-                st.session_state.current_tab = "Quiz"
                 st.rerun()
         with col2:
             if st.button("Próxima ➡️"):
@@ -271,13 +266,12 @@ elif tab == "Quiz":
                     st.info("Não há mais questões pendentes neste filtro.")
                 else:
                     st.session_state.quiz_idx = min(st.session_state.quiz_idx + 1, max(0, len(new_pend)-1))
-                    st.session_state.current_tab = "Quiz"
                     st.rerun()
 
 # -----------------------
 # ABA: Caderno de Erros (1 por vez) — ajustado para alterar status
 # -----------------------
-elif tab == "Caderno de Erros":
+with tab_objs[2]:
     st.header("📕 Caderno de Erros")
     disciplinas = get_distinct("disciplina")
     disciplina = st.selectbox("Filtrar disciplina", ["Todas"] + disciplinas, key="err_disc")
@@ -298,9 +292,6 @@ elif tab == "Caderno de Erros":
     st.write(f"Total no caderno de erros: **{len(erros)}**")
 
     if not erros:
-        if st.session_state.get("show_erro_success"):
-            st.success("✅ Acertou — removida do caderno de erros. Será revisada em 7 dias.")
-            st.session_state.show_erro_success = False
         st.info("Sem questões marcadas como erro nesse filtro.")
     else:
         st.session_state.err_idx = max(0, min(st.session_state.err_idx, len(erros)-1))
@@ -325,10 +316,10 @@ elif tab == "Caderno de Erros":
             st.session_state[choice_key] = None
             st.session_state.err_last_qid = qid
 
-        choice = st.radio("Escolha (treino rápido):", alternativas, key=choice_key)
+        choice = st.radio("Escolha:", alternativas, key=choice_key)
 
         # responder in caderno: if acertar => vira 'acerto' + proxima 7d (sai do caderno)
-        if st.button("Responder (caderno)"):
+        if st.button("Responder", key=f"err_responder_btn_{qid}"):
             if not choice:
                 st.warning("Selecione uma alternativa antes de responder.")
             else:
@@ -345,8 +336,7 @@ elif tab == "Caderno de Erros":
                     next_date = schedule_next_date(is_correct=True)
                     update_question_status(qid, new_status, next_date)
                     st.session_state.show_erro_success = True
-                    st.session_state.current_tab = "Caderno de Erros"
-                    st.rerun()
+                    st.success("✅ Acertou — removida do caderno de erros. Será revisada em 7 dias.")
                 else:
                     # permanece erro
                     new_status = "erro"
@@ -359,20 +349,19 @@ elif tab == "Caderno de Erros":
 
         col1, col2 = st.columns([1,1])
         with col1:
-            if st.button("⬅️ Anterior (caderno)") and st.session_state.err_idx > 0:
+            if st.button("⬅️ Anterior", key=f"err_prev_btn_{st.session_state.err_idx}") and st.session_state.err_idx > 0:
                 st.session_state.err_idx -= 1
                 st.session_state.current_tab = "Caderno de Erros"
                 st.rerun()
         with col2:
-            if st.button("Próxima ➡️ (caderno)"):
+            if st.button("Próxima ➡️", key=f"err_next_btn_{st.session_state.err_idx}"):
                 st.session_state.err_idx = min(st.session_state.err_idx + 1, max(0, len(erros)-1))
-                st.session_state.current_tab = "Caderno de Erros"
                 st.rerun()
 
 # -----------------------
 # ABA: Revisão
 # -----------------------
-elif tab == "Revisão":
+with tab_objs[3]:
     st.header("⏰ Revisão ")
     disciplines = get_distinct("disciplina")
     disciplina_filter = st.selectbox("Filtrar disciplina", ["Todas"] + disciplines, key="rev_disc")
@@ -391,10 +380,14 @@ elif tab == "Revisão":
 
     due = get_due_for_review(filters=filters)
     st.write(f"Questões para revisão: **{len(due)}**")
+    if "rev_idx" not in st.session_state:
+        st.session_state.rev_idx = 0
     if not due:
         st.info("Nenhuma revisão pendente hoje nesse filtro.")
     else:
-        row = due[0]
+        # clamp index
+        st.session_state.rev_idx = max(0, min(st.session_state.rev_idx, len(due)-1))
+        row = due[st.session_state.rev_idx]
         qid = row[0]
         numero = row[1]
         enunciado = row[6]
@@ -412,7 +405,7 @@ elif tab == "Revisão":
             st.session_state.rev_last_qid = qid
         choice = st.radio("Escolha:", alternativas, key=choice_key)
 
-        if st.button("Responder Revisão"):
+        if st.button("Responder", key=f"rev_responder_btn_{qid}"):
             if not choice:
                 st.warning("Selecione uma alternativa antes de responder.")
             else:
@@ -436,15 +429,38 @@ elif tab == "Revisão":
                 if comentario:
                     with st.expander("💬 Comentário do professor"):
                         st.write(comentario)
-                st.session_state.current_tab = "Revisão"
+
+        # Navegação entre questões de revisão
+        col1, col2 = st.columns([1,1])
+        with col1:
+            if st.button("⬅️ Anterior", key="rev_prev_btn") and st.session_state.rev_idx > 0:
+                st.session_state.rev_idx -= 1
+                st.rerun()
+        with col2:
+            if st.button("Próxima ➡️", key="rev_next_btn"):
+                st.session_state.rev_idx = min(st.session_state.rev_idx + 1, max(0, len(due)-1))
                 st.rerun()
 
-elif tab == "Banco":
+# -----------------------
+# ABA: Banco
+# -----------------------
+with tab_objs[4]:
     st.header("🔍 Banco de Questões — visão avançada")
     rows = get_all_questions()
     if not rows:
         st.info("Banco vazio.")
     else:
+        # Estado inicial dos filtros (antes dos widgets)
+        if "banco_disc" not in st.session_state:
+            st.session_state.banco_disc = []
+        if "banco_aula" not in st.session_state:
+            st.session_state.banco_aula = []
+        if "banco_status" not in st.session_state:
+            st.session_state.banco_status = []
+        if "banco_termo" not in st.session_state:
+            st.session_state.banco_termo = ""
+        if "banco_page" not in st.session_state:
+            st.session_state.banco_page = 1
         # Base DataFrame completo
         df = pd.DataFrame(rows, columns=[
             "id","numero","tipo","disciplina","aula","origem_pdf","enunciado","alternativas","resposta_correta",
@@ -453,14 +469,40 @@ elif tab == "Banco":
 
         # ----------------------
         with st.expander("🎯 Filtros", expanded=True):
+            # Callback para limpar filtros sem st.rerun explícito
+            def _clear_banco_filters():
+                st.session_state.banco_disc = []
+                st.session_state.banco_aula = []
+                st.session_state.banco_status = []
+                st.session_state.banco_termo = ""
+                st.session_state.banco_page = 1
+
             col_f1, col_f2, col_f3, col_f4 = st.columns(4)
             disciplinas_all = sorted(df["disciplina"].dropna().unique())
-            selected_disc = col_f1.multiselect("Disciplina", disciplinas_all, default=[])
+            selected_disc = col_f1.multiselect("Disciplina", disciplinas_all, default=[], key="banco_disc")
             aulas_all = sorted(df["aula"].dropna().unique())
-            selected_aula = col_f2.multiselect("Aula", aulas_all, default=[])
+            selected_aula = col_f2.multiselect("Aula", aulas_all, default=[], key="banco_aula")
             status_all = sorted(df["status"].dropna().unique())
-            selected_status = col_f3.multiselect("Status", status_all, default=[])
-            termo_busca = col_f4.text_input("Buscar texto (enunciado/comentário)")
+            selected_status = col_f3.multiselect("Status", status_all, default=[], key="banco_status")
+            termo_busca = col_f4.text_input("Buscar texto (enunciado/comentário)", key="banco_termo")
+
+            # Linha de chips + limpar
+            col_cf1, col_cf2 = st.columns([3,1])
+            with col_cf1:
+                chips = []
+                if selected_disc:
+                    chips.append("Disciplinas: " + ", ".join(selected_disc))
+                if selected_aula:
+                    chips.append("Aulas: " + ", ".join(selected_aula))
+                if selected_status:
+                    chips.append("Status: " + ", ".join(selected_status))
+                if termo_busca.strip():
+                    chips.append(f"Busca: '{termo_busca.strip()}'")
+                if chips:
+                    st.caption("Filtros:")
+                    st.write(" | ".join(chips))
+            with col_cf2:
+                st.button("Limpar filtros", on_click=_clear_banco_filters)
 
         mask = pd.Series([True]*len(df))
         if selected_disc:
@@ -587,7 +629,30 @@ elif tab == "Banco":
         if "Dias p/ Revisão" in df_display.columns:
             styled = styled.format({"Dias p/ Revisão": lambda v: "-" if v is None else v})
 
-        st.dataframe(styled, width="stretch")
+        # Paginação simples
+        total_reg = len(df_display)
+        colp1, colp2, colp3 = st.columns([2,1,1])
+        with colp1:
+            page_size = st.selectbox("Itens por página", [25, 50, 100], index=0)
+        total_pages = max(1, math.ceil(total_reg / page_size))
+        # Persistência da página
+        if "banco_page" not in st.session_state:
+            st.session_state.banco_page = 1
+        with colp2:
+            if st.button("◀️ Página anterior", disabled=st.session_state.banco_page <= 1):
+                st.session_state.banco_page = max(1, st.session_state.banco_page - 1)
+                st.rerun()
+        with colp3:
+            if st.button("Próxima página ▶️", disabled=st.session_state.banco_page >= total_pages):
+                st.session_state.banco_page = min(total_pages, st.session_state.banco_page + 1)
+                st.rerun()
+
+        start = (st.session_state.banco_page - 1) * page_size
+        end = start + page_size
+        df_page = df_display.iloc[start:end]
+
+        st.caption(f"Página {st.session_state.banco_page} de {total_pages} — exibindo {len(df_page)} de {total_reg}")
+        st.dataframe(df_page.style.apply(style_row, axis=1), width="stretch")
 
         # ----------------------
         # Exportações
@@ -632,8 +697,10 @@ elif tab == "Banco":
 # -----------------------
 # ABA: Desempenho (gráficos)
 # -----------------------
-elif tab == "Desempenho":
-
+# -----------------------
+# ABA: Desempenho (gráficos)
+# -----------------------
+with tab_objs[5]:
     st.header("📈 Desempenho e Progresso")
     rows = get_all_questions()
     if not rows:

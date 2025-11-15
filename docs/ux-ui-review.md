@@ -12,11 +12,9 @@ Data: 2025-11-15
 - **Exportação pronta:** CSV/JSON já integrado.
 
 ## Ganhos Rápidos (1–2 dias)
-- **Navegação:** trocar radios do topo por `st.tabs` ou `st.sidebar` fixa com aba ativa destacada.
+- [ x ] **Navegação:** trocar radios do topo por `st.tabs` ou `st.sidebar` fixa com aba ativa destacada. 
 - **CTA primária:** cor única consistente (ex.: azul) para “Responder/Salvar”; botão primário sempre visível (sticky) ao final do enunciado.
 - **Hierarquia:** limitar largura do conteúdo (~70–80 caracteres por linha), aumentar espaçamentos entre blocos e padronizar títulos/subtítulos.
-- **Enunciados longos:** usar `st.expander` para corpo completo e mostrar preview curto por padrão.
-- **Alternativas:** numerar (1–5), permitir atalhos de teclado 1–5, realçar a escolhida e mostrar feedback imediato.
 - **Filtros visuais:** chips das seleções + botão “Limpar filtros”; encapsular filtros em `st.form` com botão “Aplicar”.
 - **Tabelas (Banco):** truncar colunas extensas com tooltip, congelar ID/Disciplina, paginação 25/50, ordenação por cabeçalho.
 - **Estados vazios:** mensagens úteis quando “0 revisões” com CTA (ex.: “Ir para Quiz” ou “Carregar questões”).
@@ -32,8 +30,8 @@ Data: 2025-11-15
 - **Telemetria:** instrumentar cliques principais (Responder/Próxima), tempo por questão e taxa de abandono.
 
 ## Aprimoramentos Específicos (Streamlit)
-- **Tabs/Sidebar:** `st.tabs(["Quiz","Erros","Revisão","Banco","Desempenho"])` ou `st.sidebar.radio(...)` para navegação.
-- **Tabelas:** `st.dataframe(..., use_container_width=True, column_config=...)` com formatação condicional de status.
+- **Tabs/Sidebar:** `st.tabs(["Quiz","Erros","Revisão","Banco","Desempenho"])` ou `st.sidebar.radio(...)` para navegação. (feito)
+- **Tabelas:** `st.dataframe(..., width='stretch', column_config=...)` com formatação condicional de status.
 - **Edição/Review:** `st.data_editor` para correções rápidas; `st.download_button` para exportações.
 - **Persistência:** `st.session_state` para filtros/última aba; `st.cache_data` para listas estáticas (disciplinas/aulas).
 
@@ -44,10 +42,8 @@ Data: 2025-11-15
 4. Iterar com base nos resultados e instrumentação.
 
 ## Checklist de Implementação Rápida
-- [ ] Migrar navegação para `st.tabs`/sidebar.
+- [ x ] Migrar navegação para `st.tabs`/sidebar. (implementado)
 - [ ] Tornar “Responder/Salvar” um botão primário sticky.
-- [ ] Numerar alternativas e ativar atalhos 1–5.
-- [ ] Compactar enunciados longos com `st.expander`.
 - [ ] Tabelas com truncamento + tooltip, ordenação e paginação.
 - [ ] Chips de filtros + botão “Limpar filtros”.
 - [ ] Estados vazios com CTA adequado.
