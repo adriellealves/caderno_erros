@@ -1,0 +1,6 @@
+streamlit
+pandas
+openpyxl
+pydantic>=2,<3
+psycopg2-binary
+plotly>=5

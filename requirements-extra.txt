@@ -1,0 +1,7 @@
+# Optional tools for extraction and advanced features
+pdfplumber
+spacy
+sqlite-utils
+# Heavier NLP (Phase 2). Uncomment if you need them:
+# transformers
+# torch
