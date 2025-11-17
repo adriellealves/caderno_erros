@@ -26,6 +26,7 @@ COLUMNS = [
     "status",
     "data_resposta",
     "proxima_revisao",
+    "revisoes_feitas",  # novo campo para repetição espaçada (inteiro)
 ]
 
 
@@ -151,19 +152,16 @@ def _exec(conn, query: str, params: list | tuple = ()):  # minimal cursor exec h
 
 def create_table():
     if _using_supabase_api():
-        # In API mode we cannot create tables via PostgREST.
-        # Try a lightweight probe; if the table is missing, inform the user with SQL.
+        # Supabase: tentativa de detectar presença da coluna (não dá para ALTER via PostgREST).
         sb = _get_supabase_client()
         try:
-            sb.table("questoes").select("id").limit(1).execute()
-        except Exception as ex:
+            res = sb.table("questoes").select("id, revisoes_feitas").limit(1).execute()
+        except Exception:
             if st is not None:
                 st.warning(
-                    "Tabela 'questoes' não encontrada no Supabase. Crie-a no SQL Editor com o DDL mostrado no README (ou me peça que eu cole aqui)."
+                    "Verifique se a tabela 'questoes' possui coluna 'revisoes_feitas INT'. Crie manualmente se necessário."
                 )
-            # Do not raise to allow UI to load; operations will fail gracefully if attempted.
         return
-    # SQL backends
     conn = connect()
     try:
         if _using_postgres():
@@ -183,15 +181,27 @@ def create_table():
                     comentario TEXT,
                     status TEXT DEFAULT 'nao_respondida',
                     data_resposta TEXT,
-                    proxima_revisao TEXT
+                    proxima_revisao TEXT,
+                    revisoes_feitas INTEGER DEFAULT 0
                 )
                 """,
             )
-            # Indexes
             _exec(conn, "CREATE INDEX IF NOT EXISTS idx_questoes_status ON questoes(status)")
             _exec(conn, "CREATE INDEX IF NOT EXISTS idx_questoes_proxrev ON questoes(proxima_revisao)")
             _exec(conn, "CREATE INDEX IF NOT EXISTS idx_questoes_disciplina ON questoes(disciplina)")
             _exec(conn, "CREATE INDEX IF NOT EXISTS idx_questoes_aula ON questoes(aula)")
+            # Caso a coluna já exista não faz nada; se não existir (tabela antiga) adiciona.
+            _exec(
+                conn,
+                """
+                DO $$ BEGIN
+                    BEGIN
+                        ALTER TABLE questoes ADD COLUMN revisoes_feitas INTEGER DEFAULT 0;
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END;
+                END $$;
+                """,
+            )
         else:
             _exec(
                 conn,
@@ -209,7 +219,8 @@ def create_table():
                     comentario TEXT,
                     status TEXT DEFAULT 'nao_respondida',
                     data_resposta TEXT,
-                    proxima_revisao TEXT
+                    proxima_revisao TEXT,
+                    revisoes_feitas INTEGER DEFAULT 0
                 )
                 """,
             )
@@ -217,6 +228,11 @@ def create_table():
             _exec(conn, "CREATE INDEX IF NOT EXISTS idx_questoes_proxrev ON questoes(proxima_revisao)")
             _exec(conn, "CREATE INDEX IF NOT EXISTS idx_questoes_disciplina ON questoes(disciplina)")
             _exec(conn, "CREATE INDEX IF NOT EXISTS idx_questoes_aula ON questoes(aula)")
+            # Migração: adicionar coluna se faltar.
+            cur = _exec(conn, "PRAGMA table_info(questoes)")
+            cols = [r[1] for r in cur.fetchall()]
+            if "revisoes_feitas" not in cols:
+                _exec(conn, "ALTER TABLE questoes ADD COLUMN revisoes_feitas INTEGER DEFAULT 0")
         conn.commit()
     finally:
         conn.close()
@@ -243,8 +259,8 @@ def insert_question(data: dict):
         _exec(
             conn,
             """
-            INSERT INTO questoes (numero, tipo, disciplina, aula, origem_pdf, enunciado, alternativas, resposta_correta, comentario)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO questoes (numero, tipo, disciplina, aula, origem_pdf, enunciado, alternativas, resposta_correta, comentario, revisoes_feitas)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 data.get("numero"),
@@ -350,30 +366,128 @@ def get_due_for_review(filters: dict | None = None):
         conn.close()
     return rows
 
-def update_question_status(qid: int, status: str, proxima_revisao_date: str | None = None):
+def update_question_status(qid: int, status: str, proxima_revisao_date: str | None = None, revisoes_feitas: int | None = None):
+    """Atualiza status e opcionalmente data de próxima revisão e contador de revisões.
+
+    Se revisoes_feitas for None, mantém valor atual.
+    """
     data_resp = today_date_str()
     if _using_supabase_api():
         sb = _get_supabase_client()
-        sb.table("questoes").update({
+        payload = {
             "status": status,
             "data_resposta": data_resp,
             "proxima_revisao": proxima_revisao_date,
-        }).eq("id", qid).execute()
+        }
+        if revisoes_feitas is not None:
+            payload["revisoes_feitas"] = revisoes_feitas
+        sb.table("questoes").update(payload).eq("id", qid).execute()
         return
     conn = connect()
     try:
-        _exec(
-            conn,
-            """
-            UPDATE questoes
-            SET status=?, data_resposta=?, proxima_revisao=?
-            WHERE id=?
-            """,
-            (status, data_resp, proxima_revisao_date, qid),
-        )
+        if revisoes_feitas is None:
+            _exec(
+                conn,
+                """
+                UPDATE questoes
+                SET status=?, data_resposta=?, proxima_revisao=?
+                WHERE id=?
+                """,
+                (status, data_resp, proxima_revisao_date, qid),
+            )
+        else:
+            _exec(
+                conn,
+                """
+                UPDATE questoes
+                SET status=?, data_resposta=?, proxima_revisao=?, revisoes_feitas=?
+                WHERE id=?
+                """,
+                (status, data_resp, proxima_revisao_date, revisoes_feitas, qid),
+            )
         conn.commit()
     finally:
         conn.close()
+
+def get_revisoes_feitas(qid: int) -> int:
+    if _using_supabase_api():
+        sb = _get_supabase_client()
+        res = sb.table("questoes").select("revisoes_feitas").eq("id", qid).limit(1).execute()
+        data = res.data or []
+        if data:
+            return int(data[0].get("revisoes_feitas") or 0)
+        return 0
+    conn = connect()
+    try:
+        cur = _exec(conn, "SELECT revisoes_feitas FROM questoes WHERE id=?", (qid,))
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    finally:
+        conn.close()
+
+def compute_next_interval_days(revisoes_feitas: int) -> int:
+    """Dado o número de revisões já feitas, retorna o próximo intervalo (dias).
+
+    Novo modelo (plateau): 0->1 dia, 1->7 dias, >=2->15 dias.
+    """
+    if revisoes_feitas <= 0:
+        return 1
+    if revisoes_feitas == 1:
+        return 7
+    return 15
+
+def migrate_revisado_para_acerto():
+    """Converte registros com status 'revisado' para 'acerto'.
+
+    Política:
+    - Define revisoes_feitas = 1 se nulo ou 0.
+    - Agenda próxima revisão em compute_next_interval_days(1) dias (segunda etapa: 15d)
+      somente se não houver proxima_revisao já definida.
+    - Mantém data_resposta original; só atualiza campos necessários.
+    """
+    if _using_supabase_api():
+        sb = _get_supabase_client()
+        res = sb.table("questoes").select("id, proxima_revisao, revisoes_feitas").eq("status", "revisado").execute()
+        data = res.data or []
+        if not data:
+            return 0
+        interval_days = compute_next_interval_days(1)  # 15 dias
+        count = 0
+        for row in data:
+            qid = row.get("id")
+            revs = row.get("revisoes_feitas") or 0
+            new_revs = max(1, int(revs))
+            prox = row.get("proxima_revisao")
+            if not prox:
+                prox = (datetime.now().date() + timedelta(days=interval_days)).isoformat()
+            sb.table("questoes").update({
+                "status": "acerto",
+                "revisoes_feitas": new_revs,
+                "proxima_revisao": prox,
+            }).eq("id", qid).execute()
+            count += 1
+        return count
+    # SQLite / Postgres
+    conn = connect()
+    try:
+        cur = _exec(conn, "SELECT id, proxima_revisao, revisoes_feitas FROM questoes WHERE status='revisado'")
+        rows = cur.fetchall()
+        if not rows:
+            return 0
+        interval_days = compute_next_interval_days(1)
+        today = datetime.now().date()
+        count = 0
+        for qid, prox, revs in rows:
+            new_revs = 1 if (revs is None or int(revs) < 1) else int(revs)
+            if not prox:
+                prox = (today + timedelta(days=interval_days)).isoformat()
+            _exec(conn, "UPDATE questoes SET status='acerto', revisoes_feitas=?, proxima_revisao=? WHERE id=?", (new_revs, prox, qid))
+            count += 1
+        conn.commit()
+        return count
+    finally:
+        conn.close()
+
 
 _DISTINCT_WHITELIST = {"disciplina", "aula", "status", "origem_pdf", "tipo", "numero"}
 

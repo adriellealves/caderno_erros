@@ -18,6 +18,9 @@ from db import (
     update_question_status,
     get_distinct,
     get_backend_label,
+    compute_next_interval_days,
+    migrate_revisado_para_acerto,
+    get_revisoes_feitas,
 )
 
 # -----------------------
@@ -60,6 +63,16 @@ def carregar_alternativas(alt_text):
 st.set_page_config(page_title="Caderno de Questões Inteligente", layout="wide")
 st.title("📘 Caderno de Questões Inteligente")
 create_table()
+
+# Migração automática de status 'revisado' legado para o novo modelo (acerto + revisões)
+if "_migracao_revisado_done" not in st.session_state:
+    try:
+        migrados = migrate_revisado_para_acerto()
+        if migrados:
+            st.sidebar.success(f"Migração realizada: {migrados} questões 'revisado' convertidas para 'acerto'.")
+    except Exception as ex:
+        st.sidebar.warning(f"Falha na migração revisado->acerto: {ex}")
+    st.session_state._migracao_revisado_done = True
 
 # session defaults
 if "current_tab" not in st.session_state:
@@ -232,16 +245,27 @@ with tab_objs[1]:
                         new_status = "duvida"
                         next_date = schedule_next_date(is_correct=True, marked_doubt=True)
                     else:
+                        # Inicia/continua SRS: próxima revisão com base nas revisões já feitas
                         new_status = "acerto"
-                        next_date = schedule_next_date(is_correct=True)
+                        revs = get_revisoes_feitas(qid)
+                        dias = compute_next_interval_days(revs)
+                        next_date = (datetime.now().date() + timedelta(days=dias)).isoformat()
                 else:
                     new_status = "erro"
                     next_date = schedule_next_date(is_correct=False)
 
-                update_question_status(qid, new_status, next_date)
+                # incrementa revisões apenas quando acerto sem dúvida
+                if is_correct and not marked_doubt:
+                    revs = get_revisoes_feitas(qid)
+                    update_question_status(qid, new_status, next_date, revisoes_feitas=revs + 1)
+                else:
+                    update_question_status(qid, new_status, next_date)
 
                 if is_correct:
-                    st.success("✅ Resposta correta!")
+                    if not marked_doubt:
+                        st.success(f"✅ Resposta correta! Próxima revisão em {dias} dias.")
+                    else:
+                        st.success("✅ Resposta correta (marcada como dúvida) — revisa em 1 dia.")
                 else:
                     if resp_certa.upper() in ["A","B","C","D","E"]:
                         st.error(f"❌ Incorreta. Correta: {resp_certa.upper()}")
@@ -333,10 +357,12 @@ with tab_objs[2]:
 
                 if is_correct:
                     new_status = "acerto"
-                    next_date = schedule_next_date(is_correct=True)
-                    update_question_status(qid, new_status, next_date)
+                    revs = get_revisoes_feitas(qid)
+                    dias = compute_next_interval_days(revs)
+                    next_date = (datetime.now().date() + timedelta(days=dias)).isoformat()
+                    update_question_status(qid, new_status, next_date, revisoes_feitas=revs + 1)
                     st.session_state.show_erro_success = True
-                    st.success("✅ Acertou — removida do caderno de erros. Será revisada em 7 dias.")
+                    st.success(f"✅ Acertou — removida do caderno de erros. Próxima revisão em {dias} dias.")
                 else:
                     # permanece erro
                     new_status = "erro"
@@ -395,6 +421,8 @@ with tab_objs[3]:
         resposta_correta = row[8]
         comentario = row[9]
         status = row[10]
+        proxima_revisao = row[12]
+        revisoes_feitas = row[13] if len(row) > 13 and row[13] is not None else 0
 
         st.subheader(f"Aula: {row[4]} — {row[5]}")
         st.write(enunciado)
@@ -416,19 +444,32 @@ with tab_objs[3]:
                 else:
                     correta_bool = str(resp_certa).strip().lower() in ["certo","correta","c","true"]
                     is_correct = str(choice).strip().lower().startswith("certo") == correta_bool
-
-                # Simplified transition: correct => revisado (no schedule), wrong => erro (+1d)
-                new_status = "revisado" if is_correct else "erro"
-                next_date = None if is_correct else schedule_next_date(is_correct=False)
-
-                update_question_status(qid, new_status, next_date)
                 if is_correct:
-                    st.success("✅ Acertou na revisão!")
+                    # Mantém status 'acerto' e incrementa contador de revisões para espaçamento (1,7,15,15,...)
+                    dias = compute_next_interval_days(revisoes_feitas)
+                    novo_total_revisoes = revisoes_feitas + 1
+                    next_date = (datetime.now().date() + timedelta(days=dias)).isoformat()
+                    update_question_status(qid, "acerto", next_date, revisoes_feitas=novo_total_revisoes)
+                    st.success(f"✅ Acertou! Próxima revisão em {dias} dias (revisões feitas: {novo_total_revisoes}).")
                 else:
-                    st.error("❌ Ainda incorreto.")
+                    # Volta a ser erro (mantém revisões_feitas) com revisão curta (1 dia)
+                    next_date = schedule_next_date(is_correct=False)
+                    update_question_status(qid, "erro", next_date, revisoes_feitas=revisoes_feitas)
+                    st.error("❌ Incorreto — retornou ao caderno de erros (1 dia).")
                 if comentario:
                     with st.expander("💬 Comentário do professor"):
                         st.write(comentario)
+
+        # Informações adicionais de repetição espaçada
+        with st.expander("ℹ️ Info de repetição espaçada"):
+            if status == "acerto":
+                st.write(f"Revisões feitas: {revisoes_feitas}")
+                if proxima_revisao:
+                    st.write(f"Próxima revisão agendada para: {proxima_revisao}")
+                else:
+                    st.write("Sem próxima revisão agendada (configure ao responder corretamente).")
+            else:
+                st.write("Status atual não é 'acerto'; ao acertar aqui inicia/continua espaçamento.")
 
         # Navegação entre questões de revisão
         col1, col2 = st.columns([1,1])
@@ -464,7 +505,7 @@ with tab_objs[4]:
         # Base DataFrame completo
         df = pd.DataFrame(rows, columns=[
             "id","numero","tipo","disciplina","aula","origem_pdf","enunciado","alternativas","resposta_correta",
-            "comentario","status","data_resposta","proxima_revisao"
+            "comentario","status","data_resposta","proxima_revisao","revisoes_feitas"
         ])
 
         # ----------------------
@@ -599,7 +640,7 @@ with tab_objs[4]:
         mostrar_enunciado = st.toggle("Mostrar coluna de enunciado completa", value=False)
         mostrar_comentario = st.toggle("Mostrar comentários", value=False)
 
-        cols_base = ["id","disciplina","aula","status","data_resposta","proxima_revisao","dias_revisao","alternativas_preview"]
+        cols_base = ["id","disciplina","aula","status","revisoes_feitas","data_resposta","proxima_revisao","dias_revisao","alternativas_preview"]
         if mostrar_enunciado:
             cols_base.insert(3, "enunciado")
         if mostrar_comentario:
@@ -613,6 +654,7 @@ with tab_objs[4]:
             "disciplina": "Disciplina",
             "aula": "Aula",
             "status": "Status",
+            "revisoes_feitas": "Revisões",
             "data_resposta": "Data Resposta",
             "proxima_revisao": "Próx. Revisão",
             "dias_revisao": "Dias p/ Revisão",
@@ -708,7 +750,7 @@ with tab_objs[5]:
     else:
         df = pd.DataFrame(rows, columns=[
             "id","numero","tipo","disciplina","aula","origem_pdf","enunciado","alternativas","resposta_correta",
-            "comentario","status","data_resposta","proxima_revisao"
+            "comentario","status","data_resposta","proxima_revisao","revisoes_feitas"
         ])
 
         # Filtros por período
@@ -777,6 +819,11 @@ with tab_objs[5]:
         revisados = respondidas[respondidas["status"] == "revisado"]
         total = len(df_total_filt)  # todas as questões filtradas por disciplina (inclusive não respondidas)
 
+        # Progresso percentual
+        st.subheader("Progresso geral")
+        pct = 100 * len(respondidas) / total if total else 0
+        st.progress(pct/100, text=f"{pct:.1f}% das questões já respondidas.")
+        
         # Métricas em colunas
         st.markdown("<style>.metric-card {background:#f3f4f6;border-radius:8px;padding:12px 0;margin:4px;text-align:center;box-shadow:0 1px 4px #0001;}</style>", unsafe_allow_html=True)
         col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -965,10 +1012,58 @@ with tab_objs[5]:
                 mime="application/json"
             )
 
-        # Progresso percentual
-        st.subheader("Progresso geral")
-        pct = 100 * len(respondidas) / total if total else 0
-        st.progress(pct/100, text=f"{pct:.1f}% das questões já respondidas.")
+        # Distribuição de revisões espaçadas
+        st.markdown("---")
+        st.subheader("Distribuição de Revisões (Spaced Repetition)")
+        acertos_rev = acertos.copy()
+        if not acertos_rev.empty:
+            acertos_rev["revisoes_feitas"] = acertos_rev["revisoes_feitas"].fillna(0).astype(int)
+            dist_rev = acertos_rev["revisoes_feitas"].value_counts().sort_index()
+            if not dist_rev.empty:
+                df_rev = dist_rev.reset_index()
+                df_rev.columns = ["Revisões", "Quantidade"]
+                fig_rev = px.bar(df_rev, x="Revisões", y="Quantidade", text="Quantidade", title=None)
+                fig_rev.update_layout(margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Número de revisões feitas", yaxis_title="Questões")
+                fig_rev.update_traces(textposition="outside")
+                st.plotly_chart(fig_rev, use_container_width=True)
+                st.caption("Mostra quantas questões chegaram a cada nível de revisão.")
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    st.download_button("CSV revisões", dist_rev.to_csv(), file_name="distribuicao_revisoes.csv", mime="text/csv")
+                with col_r2:
+                    st.download_button("JSON revisões", dist_rev.to_json(), file_name="distribuicao_revisoes.json", mime="application/json")
+            else:
+                st.info("Ainda sem revisões registrada.")
+        else:
+            st.info("Nenhum 'acerto' para calcular distribuição de revisões.")
+
+        # Média de revisões por disciplina (considerando apenas acertos)
+        st.markdown("---")
+        st.subheader("Média de Revisões por Disciplina")
+        if not acertos_rev.empty:
+            grp = acertos_rev.copy()
+            grp["revisoes_feitas"] = grp["revisoes_feitas"].fillna(0).astype(int)
+            media_rev = grp.groupby("disciplina")["revisoes_feitas"].mean().sort_values(ascending=False)
+            if not media_rev.empty:
+                df_media = media_rev.reset_index()
+                df_media.columns = ["Disciplina", "Média de Revisões"]
+                # Arredondar para uma casa para exibir
+                df_media["Média de Revisões"] = df_media["Média de Revisões"].round(1)
+                fig_media = px.bar(df_media, x="Disciplina", y="Média de Revisões", text="Média de Revisões", title=None)
+                fig_media.update_layout(margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Disciplina", yaxis_title="Média de revisões por questão (acertos)")
+                fig_media.update_traces(textposition="outside")
+                st.plotly_chart(fig_media, use_container_width=True)
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    st.download_button("CSV média por disciplina", df_media.to_csv(index=False), file_name="media_revisoes_por_disciplina.csv", mime="text/csv")
+                with col_m2:
+                    st.download_button("JSON média por disciplina", df_media.to_json(orient="records"), file_name="media_revisoes_por_disciplina.json", mime="application/json")
+            else:
+                st.info("Sem dados de média por disciplina no filtro atual.")
+                
+                
+        else:
+            st.info("Nenhum 'acerto' para calcular média por disciplina.")
 
 st.markdown("---")
 st.caption("Protótipo corrigido — execute: streamlit run app.py")
