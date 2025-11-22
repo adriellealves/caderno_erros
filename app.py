@@ -212,22 +212,15 @@ with tab_objs[1]:
 
         already_answered = status != "nao_respondida"
 
-        # clear leftover choice when question changes
+
+        # Usar formulário para processar apenas ao clicar em 'Responder'
         escolha_key = f"quiz_choice_{qid}"
-        if st.session_state.get("quiz_last_qid") != qid:
-            # clear previous choice for safety
-            st.session_state[escolha_key] = None
-            st.session_state.quiz_last_qid = qid
-
-        # radio (disabled if already answered)
-        choice = st.radio("Escolha uma alternativa:", alternativas, key=escolha_key, disabled=already_answered)
         doubt_key = f"quiz_doubt_{qid}"
-        marked_doubt = st.checkbox("Marcar como dúvida", key=doubt_key, disabled=already_answered)
+        with st.form(f"quiz_form_{qid}", clear_on_submit=False):
+            choice = st.radio("Escolha uma alternativa:", alternativas, key=escolha_key, disabled=already_answered)
+            marked_doubt = st.checkbox("Marcar como dúvida", key=doubt_key, disabled=already_answered)
+            resp_btn = st.form_submit_button("Responder", disabled=already_answered)
 
-        # responder button (disabled if already answered)
-        resp_btn = st.button("Responder", disabled=already_answered, key=f"quiz_responder_btn_{qid}")
-
-        # process only if not already answered and button pressed
         if resp_btn and not already_answered:
             if choice is None or str(choice).strip() == "":
                 st.warning("Selecione uma alternativa antes de responder.")
@@ -334,16 +327,14 @@ with tab_objs[2]:
         st.write(enunciado)
         alternativas = carregar_alternativas(alternativas_text) or ["Certo","Errado"]
 
-        # clear previous choice when qid changes
+
+        # Usar formulário para processar apenas ao clicar em 'Responder'
         choice_key = f"err_choice_{qid}"
-        if st.session_state.get("err_last_qid") != qid:
-            st.session_state[choice_key] = None
-            st.session_state.err_last_qid = qid
+        with st.form(f"err_form_{qid}", clear_on_submit=False):
+            choice = st.radio("Escolha:", alternativas, key=choice_key)
+            resp_btn = st.form_submit_button("Responder")
 
-        choice = st.radio("Escolha:", alternativas, key=choice_key)
-
-        # responder in caderno: if acertar => vira 'acerto' + proxima 7d (sai do caderno)
-        if st.button("Responder", key=f"err_responder_btn_{qid}"):
+        if resp_btn:
             if not choice:
                 st.warning("Selecione uma alternativa antes de responder.")
             else:
@@ -431,10 +422,13 @@ with tab_objs[3]:
         if st.session_state.get("rev_last_qid") != qid:
             st.session_state[choice_key] = None
             st.session_state.rev_last_qid = qid
-        choice = st.radio("Escolha:", alternativas, key=choice_key)
+        form_key = f"rev_form_{qid}"
+        with st.form(form_key, clear_on_submit=False):
+            choice = st.radio("Escolha:", alternativas, key=choice_key)
+            submitted = st.form_submit_button("Responder")
 
-        if st.button("Responder", key=f"rev_responder_btn_{qid}"):
-            if not choice:
+        if submitted:
+            if choice is None or str(choice).strip() == "":
                 st.warning("Selecione uma alternativa antes de responder.")
             else:
                 resp_certa = (resposta_correta or "").strip()
@@ -1025,7 +1019,7 @@ with tab_objs[5]:
                 fig_rev = px.bar(df_rev, x="Revisões", y="Quantidade", text="Quantidade", title=None)
                 fig_rev.update_layout(margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Número de revisões feitas", yaxis_title="Questões")
                 fig_rev.update_traces(textposition="outside")
-                st.plotly_chart(fig_rev, use_container_width=True)
+                st.plotly_chart(fig_rev, width="stretch")
                 st.caption("Mostra quantas questões chegaram a cada nível de revisão.")
                 col_r1, col_r2 = st.columns(2)
                 with col_r1:
@@ -1052,7 +1046,7 @@ with tab_objs[5]:
                 fig_media = px.bar(df_media, x="Disciplina", y="Média de Revisões", text="Média de Revisões", title=None)
                 fig_media.update_layout(margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Disciplina", yaxis_title="Média de revisões por questão (acertos)")
                 fig_media.update_traces(textposition="outside")
-                st.plotly_chart(fig_media, use_container_width=True)
+                st.plotly_chart(fig_media, width="stretch")
                 col_m1, col_m2 = st.columns(2)
                 with col_m1:
                     st.download_button("CSV média por disciplina", df_media.to_csv(index=False), file_name="media_revisoes_por_disciplina.csv", mime="text/csv")
